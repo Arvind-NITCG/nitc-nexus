@@ -6,7 +6,7 @@ NITC Nexus is an intelligent, hallucination-free conversational agent designed t
 
 ---
 
-## 🏗️ The Architecture (Two-Stream Memory)
+##  The Architecture (Two-Stream Memory)
 
 We are building a highly modular, decoupled system.
 
