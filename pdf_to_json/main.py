@@ -66,10 +66,45 @@ def _extract_title(md_text: str) -> str:
     return "Untitled"
 
 
+def _normalize_date(raw: str) -> str:
+    """Parse a raw date string and return it in dd/mm/yyyy format."""
+    from datetime import datetime
+
+    raw = raw.strip()
+
+    # Try common formats in order
+    formats = [
+        "%Y-%m-%d",       # 2024-01-12
+        "%Y/%m/%d",       # 2024/01/12
+        "%d-%m-%Y",       # 12-01-2024
+        "%d/%m/%Y",       # 12/01/2024
+        "%d %B %Y",       # 12 January 2024
+        "%d %b %Y",       # 12 Jan 2024
+        "%d %B, %Y",      # 12 January, 2024
+        "%d %b, %Y",      # 12 Jan, 2024
+        "%B %d, %Y",      # January 12, 2024
+        "%b %d, %Y",      # Jan 12, 2024
+        "%B %d %Y",       # January 12 2024
+        "%b %d %Y",       # Jan 12 2024
+    ]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+
+    # If nothing worked, return the raw string as-is
+    return raw
+
+
 def _extract_date(text: str) -> str:
-    """Find the first date-like string in the document."""
+    """Find the first date-like string in the document and return it as dd/mm/yyyy."""
     match = _DATE_RE.search(text)
-    return match.group(0).strip() if match else "unknown"
+    if not match:
+        return "unknown"
+    return _normalize_date(match.group(0))
 
 
 def _extract_audience(text: str) -> str:

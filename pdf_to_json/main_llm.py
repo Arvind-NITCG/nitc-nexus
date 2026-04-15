@@ -41,9 +41,10 @@ Schema:
   "title": "string - the document title",
   "category": "one of: syllabus | circular | academic_calendar | hostel_rules",
   "target_audience": "string - e.g. students, faculty, general",
-  "date_issued": "string - YYYY-MM-DD format, or 'unknown' if not found",
-  "content_markdown": "string - the cleaned/structured markdown of the full document"
-}"""
+  "date_issued": "string - dd/mm/yyyy format (e.g. 15/04/2024), or 'unknown' if not found"
+}
+
+Do NOT include the document content in the output. Only return the metadata fields above."""
 
 USER_PROMPT_TEMPLATE = """Extract structured metadata from the following academic document.
 
@@ -153,6 +154,42 @@ def parse_json(text: str) -> dict[str, Any]:
     raise ValueError("LLM did not return valid JSON.\nRaw output:\n" + text)
 
 
+# ── Date Normalisation ───────────────────────────────────────────────────────
+
+
+def _normalize_date(raw: str) -> str:
+    """Parse a raw date string and return it in dd/mm/yyyy format."""
+    from datetime import datetime
+
+    raw = raw.strip()
+    if raw.lower() == "unknown":
+        return "unknown"
+
+    formats = [
+        "%Y-%m-%d",       # 2024-01-12
+        "%Y/%m/%d",       # 2024/01/12
+        "%d-%m-%Y",       # 12-01-2024
+        "%d/%m/%Y",       # 12/01/2024
+        "%d %B %Y",       # 12 January 2024
+        "%d %b %Y",       # 12 Jan 2024
+        "%d %B, %Y",      # 12 January, 2024
+        "%d %b, %Y",      # 12 Jan, 2024
+        "%B %d, %Y",      # January 12, 2024
+        "%b %d, %Y",      # Jan 12, 2024
+        "%B %d %Y",       # January 12 2024
+        "%b %d %Y",       # Jan 12 2024
+    ]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+
+    return raw
+
+
 # ── Validation ───────────────────────────────────────────────────────────────
 
 _VALID_CATEGORIES = {"syllabus", "circular", "academic_calendar", "hostel_rules"}
@@ -160,7 +197,7 @@ _VALID_CATEGORIES = {"syllabus", "circular", "academic_calendar", "hostel_rules"
 
 def validate(obj: dict[str, Any]) -> dict[str, Any]:
     """Ensure the LLM output matches the expected schema."""
-    required = {"title", "category", "target_audience", "date_issued", "content_markdown"}
+    required = {"title", "category", "target_audience", "date_issued"}
     missing = required - obj.keys()
     if missing:
         raise ValueError(f"Missing required fields: {missing}")
@@ -170,6 +207,9 @@ def validate(obj: dict[str, Any]) -> dict[str, Any]:
             f"Invalid category '{obj['category']}'. "
             f"Must be one of {_VALID_CATEGORIES}."
         )
+
+    # Normalise date to dd/mm/yyyy regardless of what the LLM returned
+    obj["date_issued"] = _normalize_date(obj.get("date_issued", "unknown"))
 
     return obj
 
@@ -190,6 +230,9 @@ def process_pdf(path: str) -> dict[str, Any]:
     result = parse_json(raw)
     result = validate(result)
     print("  ✔ LLM returned valid metadata", file=sys.stderr)
+
+    # Attach the markdown we already have locally (saves LLM output tokens)
+    result["content_markdown"] = md_text
 
     # Attach a locally-generated document_id
     result["document_id"] = str(uuid.uuid4())
