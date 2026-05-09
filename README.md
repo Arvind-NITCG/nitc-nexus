@@ -10,10 +10,10 @@ NITC Nexus is an intelligent, hallucination-free conversational agent designed t
 
 We are building a highly modular, decoupled system.
 
-**AI & Data Core (The Brain & Vault):**  **Tech:** Python, LangChain, ChromaDB, Gemini/OpenAI API.                                                                                                                **Logic:** Automated Email IMAP parsing converts PDFs to Markdown JSON. LangChain chunks the data via headers, and ChromaDB handles local vector storage with strict metadata filtering to prevent stale data retrieval.
-**Backend Bridge (The Nervous System):** **Tech:** Python, FastAPI, PostgreSQL, Meta WhatsApp Webhook.
+- **AI & Data Core (The Brain & Vault):**  **Tech:** Python, LangChain, ChromaDB, Gemini/OpenAI API.                                                                                                                **Logic:** Automated Email IMAP parsing converts PDFs to Markdown JSON. LangChain chunks the data via headers, and ChromaDB handles local vector storage with strict metadata filtering to prevent stale data retrieval.
+- **Backend Bridge (The Nervous System):** **Tech:** Python, FastAPI, PostgreSQL, Meta WhatsApp Webhook.
 **Logic:** Asynchronous routing. Handles user session memory (sliding window of last 5 messages) and connects external interfaces to the AI core.
-**Frontend UI (The Face):** * **Tech:** Flutter / Kotlin.
+- **Frontend UI (The Face):** * **Tech:** Flutter / Kotlin.
 **Logic:** Sleek, low-latency mobile application interacting via REST APIs with the FastAPI backend.
 
 ---
