@@ -302,43 +302,4 @@ class NITCVectorStore:
             "by_audience":      audiences,
         }
     
-    # ── SMOKE TEST ────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-
-    # Fake document in Rahan's format
-    sample_doc = {
-        "document_id":     "DOC_SYLLABUS_CS301_2024",
-        "title":           "CS301 Data Structures Syllabus 2024",
-        "category":        "syllabus",
-        "target_audience": "CSE",
-        "date_issued":     "2024-07-01",
-        "content_markdown": "# CS301\n## Module 1\nArrays and linked lists.\n## Module 2\nTrees and graphs.",
-    }
-
-    # Fake chunks — simulating what Prashant's LangChain splitter produces
-    fake_chunks = [
-        "Arrays are contiguous memory blocks. Linked lists use nodes and pointers.",
-        "Binary trees, BST operations, BFS and DFS traversals.",
-        "Memoisation, tabulation, optimal substructure.",
-    ]
-
-    store = NITCVectorStore()
-
-    # Test insert
-    store.upsert_document(sample_doc, fake_chunks)
-
-    # Test query
-    print("\n── Query test ──────────────────────────")
-    results = store.query("How do linked lists work?", n_results=2)
-    for r in results:
-        print(f"  Score {r['score']:.3f} | {r['text'][:60]}")
-
-    # Test stats
-    print("\n── Stats ───────────────────────────────")
-    print(json.dumps(store.stats(), indent=2))
-
-    # Test eviction (dry run — won't delete anything)
-    store.evict_stale_documents(dry_run=True)
-
-    print("\n✓ Smoke test passed.")
+    
