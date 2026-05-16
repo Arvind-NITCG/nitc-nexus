@@ -63,7 +63,12 @@ class NITCVectorStore:
 
         # handle both list[str] and list[Document] from LangChain
         # Extracts the text from Document objects if needed
-        chunks = [c.page_content if hasattr(c, 'page_content') else c for c in chunks]
+        chunks = [
+            c.content if hasattr(c, 'content')
+            else c.page_content if hasattr(c, 'page_content')
+            else c
+            for c in chunks]
+   
 
         # convert chunks to embeddings
         print(f"Embedding {len(chunks)} chunks for '{title}'...")
