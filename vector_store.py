@@ -3,13 +3,18 @@ import json
 from datetime import datetime #check old docs
 from typing import Optional #None
 
-import chromadb
-from chromadb.config import Settings
+import psycopg2
+from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 
 # ── CONFIG ────────────────────────────────────────────────────────
-CHROMA_PATH     = "./nitc_chroma_db"  
-COLLECTION_NAME = "nitc_documents"    # like a table name in normal DB
+DB_CONFIG = {
+    "host":     "localhost",
+    "port":     5432,
+    "dbname":   "nitc_nexus",
+    "user":     "postgres",
+    "password": "postgres123",
+}
 EMBEDDING_MODEL = "all-MiniLM-L6-v2" 
 
 # How many days before a document is considered stale
@@ -23,31 +28,24 @@ STALE_POLICY = {
 
 class NITCVectorStore:
    
-    def __init__(self, chroma_path: str = CHROMA_PATH):
+    def __init__(self):
         
-        # Connect to ChromaDB — creates the folder if it doesn't exist
-        self.client = chromadb.PersistentClient(
-            path=chroma_path,
-            settings=Settings(anonymized_telemetry=False),
-            # anonymized_telemetry=False means don't send usage data to ChromaDB servers
-        )
-        
-        # Get the collection if it exists, create it if it doesn't
-        # metadata={"hnsw:space": "cosine"} means use cosine similarity
-        self.collection = self.client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-        print(f"Connected — {self.collection.count()} chunks stored")
+        # Connect to PostgreSQL
+        self.conn = psycopg2.connect(**DB_CONFIG)
+        self.conn.autocommit = True
+        register_vector(self.conn)
+
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM chunks;")
+            count = cur.fetchone()[0]
+        print(f"Connected to PostgreSQL — {count} chunks stored")
 
         # Load the embedding model
-        # First time: downloads ~80MB from internet and caches it
-        # After that: loads from cache instantly
         self.embedder = SentenceTransformer(EMBEDDING_MODEL)
         print(f"Embedding model loaded")
 
     def upsert_document(self, doc: dict, chunks: list) -> int:
-       
+
         if not chunks:
             print(f"WARNING: no chunks — skipped")
             return 0
@@ -61,51 +59,48 @@ class NITCVectorStore:
         # delete old version of this document
         self._delete_by_document_id(doc_id)
 
-        # handle both list[str] and list[Document] from LangChain
-        # Extracts the text from Document objects if needed
-        chunks = [
-            c.content if hasattr(c, 'content')
-            else c.page_content if hasattr(c, 'page_content')
-            else c
-            for c in chunks]
-   
+        # extract text + page number from whatever chunk format comes in
+        texts = []
+        pages = []
+        for c in chunks:
+            if hasattr(c, 'content'):
+                texts.append(c.content)
+                pages.append(getattr(c, 'page', 1))
+            elif hasattr(c, 'page_content'):
+                texts.append(c.page_content)
+                pages.append(1)
+            else:
+                texts.append(c)
+                pages.append(1)
 
         # convert chunks to embeddings
-        print(f"Embedding {len(chunks)} chunks for '{title}'...")
-        embeddings = self.embedder.encode(chunks, show_progress_bar=False).tolist()
+        print(f"Embedding {len(texts)} chunks for '{title}'...")
+        embeddings = self.embedder.encode(texts, show_progress_bar=False)
 
-        # build unique IDs and metadata for each chunk
-        chunk_ids = []
-        metadatas = []
-        for i, chunk in enumerate(chunks):
-            
-            # unique ID for this chunk — based on doc_id + position
-            chunk_id = self._make_chunk_id(doc_id, i)
-            chunk_ids.append(chunk_id)
-            
-            # metadata stored alongside each chunk
-            # used for filtering in query()
-            metadatas.append({
-                "document_id":     doc_id,
-                "title":           title,
-                "category":        category,
-                "target_audience": audience,
-                "date_issued":     date_str,
-                "chunk_index":     i,
-                "ingested_at":     datetime.utcnow().isoformat(),
-            })
+        # insert each chunk as a row in the chunks table
+        with self.conn.cursor() as cur:
+            for i, (text, page, emb) in enumerate(zip(texts, pages, embeddings)):
+                chunk_id = self._make_chunk_id(doc_id, i)
+                cur.execute(
+                    """
+                    INSERT INTO chunks
+                        (chunk_id, document_id, title, category,
+                         target_audience, date_issued, page_number,
+                         chunk_index, content, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (chunk_id) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        embedding = EXCLUDED.embedding;
+                    """,
+                    (
+                        chunk_id, doc_id, title, category,
+                        audience, date_str, page,
+                        i, text, emb.tolist(),
+                    ),
+                )
 
-        # store everything in ChromaDB
-        # upsert = insert if new, replace if exists
-        self.collection.upsert(
-            ids        = chunk_ids,   # unique ID per chunk
-            embeddings = embeddings,  # 384 numbers per chunk
-            documents  = chunks,      # original text (stored alongside)
-            metadatas  = metadatas,   # category, audience, date etc.
-        )
-
-        print(f"✓ Stored {len(chunks)} chunks for '{title}'")
-        return len(chunks)
+        print(f"✓ Stored {len(texts)} chunks for '{title}'")
+        return len(texts)
     
     def query(
         self,
@@ -124,43 +119,58 @@ class NITCVectorStore:
         """
 
         # Convert the question to an embedding
-        query_embedding = self.embedder.encode([question]).tolist()
+        query_embedding = self.embedder.encode([question])[0]
 
-        # Build the WHERE filter clause
-        # None means no filter — search everything
-        where = self._build_where(category, target_audience)
+        # Build the WHERE clause as plain SQL
+        conditions = []
+        params = []
 
-        # Set up query arguments
-        kwargs = {
-            "query_embeddings": query_embedding,
-            "n_results":        n_results,
-            "include":          ["documents", "metadatas", "distances"],
-        }
-        
-        # Only add WHERE clause if we have filters
-        if where:
-            kwargs["where"] = where
+        if category:
+            conditions.append("category = %s")
+            params.append(category)
 
-        # Run the search — ChromaDB's HNSW finds closest embeddings
-        results = self.collection.query(**kwargs)
+        if target_audience and target_audience != "ALL":
+            conditions.append("(target_audience = %s OR target_audience = 'ALL')")
+            params.append(target_audience)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        # pgvector's <=> operator computes cosine DISTANCE
+        # (lower = more similar)
+        sql = f"""
+            SELECT content, document_id, title, category,
+                   target_audience, date_issued, page_number, chunk_index,
+                   embedding <=> %s AS distance
+            FROM chunks
+            {where_clause}
+            ORDER BY distance ASC
+            LIMIT %s;
+        """
+
+        with self.conn.cursor() as cur:
+            cur.execute(sql, [query_embedding] + params + [n_results])
+            rows = cur.fetchall()
 
         # Reformat results into clean dicts
         formatted = []
-        for doc, meta, dist in zip(
-            results["documents"][0],
-            results["metadatas"][0],
-            results["distances"][0],
-        ):
+        for row in rows:
+            (content, doc_id, title, category, audience,
+             date_issued, page_number, chunk_index, distance) = row
             formatted.append({
-                "text":     doc,
-                "score":    round(1 - dist, 4),  # convert distance to similarity
-                # distance 0 = identical → similarity 1.0
-                # distance 1 = opposite  → similarity 0.0
-                "metadata": meta,
+                "text":     content,
+                "score":    round(1 - distance, 4),
+                "metadata": {
+                    "document_id":     doc_id,
+                    "title":           title,
+                    "category":        category,
+                    "target_audience": audience,
+                    "date_issued":     str(date_issued),
+                    "page_number":     page_number,
+                    "chunk_index":     chunk_index,
+                },
             })
 
         return formatted
-    
     def evict_stale_documents(self, dry_run: bool = False) -> list[str]:
         """
         Delete documents that are older than their category's threshold.
@@ -173,34 +183,28 @@ class NITCVectorStore:
 
         print(f"Running stale-data check (dry_run={dry_run})...")
 
-        # Get all stored metadata
-        all_results = self.collection.get(include=["metadatas"])
-        
-        if not all_results["ids"]:
+        # Get one row per document (not per chunk)
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT document_id, category, date_issued FROM chunks;")
+            rows = cur.fetchall()
+
+        if not rows:
             print("Collection is empty.")
             return []
 
-        today = datetime.today()
-        stale_doc_ids = set()  # use set to avoid duplicates
+        today = datetime.today().date()
+        stale_doc_ids = []
 
-        # Check each chunk's date against its category's threshold
-        for chunk_id, meta in zip(all_results["ids"], all_results["metadatas"]):
-            category  = meta.get("category", "general")
-            date_str  = meta.get("date_issued", "")
+        # Check each document's date against its category's threshold
+        for doc_id, category, date_issued in rows:
             threshold = STALE_POLICY.get(category, 180)  # days
 
-            if not date_str:
+            if date_issued is None:
                 continue
-            
-            try:
-                issued   = datetime.strptime(date_str, "%Y-%m-%d")
-                age_days = (today - issued).days
-                
-                if age_days > threshold:
-                    # this document is too old — mark for deletion
-                    stale_doc_ids.add(meta["document_id"])
-            except ValueError:
-                pass  # skip if date format is wrong
+
+            age_days = (today - date_issued).days
+            if age_days > threshold:
+                stale_doc_ids.append(doc_id)
 
         if not stale_doc_ids:
             print("No stale documents found.")
@@ -218,88 +222,79 @@ class NITCVectorStore:
         else:
             print("Dry run — nothing deleted.")
 
-        return list(stale_doc_ids)
+        return stale_doc_ids
     
-    # ── HELPER FUNCTIONS ──────────────────────────────────────────
-
     def _delete_by_document_id(self, document_id: str):
         """Delete ALL chunks that belong to a document_id."""
         
-        # Find all chunk IDs for this document
-        existing = self.collection.get(
-            where={"document_id": {"$eq": document_id}},
-            include=[],  # we only need IDs, not content
-        )
-        
-        if existing["ids"]:
-            self.collection.delete(ids=existing["ids"])
-            print(f"  Removed {len(existing['ids'])} old chunks for '{document_id}'")
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM chunks WHERE document_id = %s;", (document_id,))
+            if cur.rowcount > 0:
+                print(f"  Removed {cur.rowcount} old chunks for '{document_id}'")
 
     @staticmethod
     def _make_chunk_id(document_id: str, chunk_index: int) -> str:
         """
         Generate a stable unique ID for a chunk.
         Same document_id + same position always = same ID.
-        This is important for upsert to work correctly.
         """
         raw = f"{document_id}__chunk_{chunk_index}"
         return hashlib.md5(raw.encode()).hexdigest()
-
-    @staticmethod
-    def _build_where(
-        category:        Optional[str],
-        target_audience: Optional[str],
-    ) -> Optional[dict]:
-        """
-        Build a ChromaDB WHERE filter from optional arguments.
-        
-        If category="syllabus" AND target_audience="S4":
-        Returns chunks that are syllabus AND (S4 OR ALL)
-        
-        The $or for audience means S4 students also get
-        documents meant for everyone, not just S4-specific ones.
-        """
-        conditions = []
-        
-        if category:
-            conditions.append({"category": {"$eq": category}})
-        
-        if target_audience and target_audience != "ALL":
-            conditions.append({
-                "$or": [
-                    {"target_audience": {"$eq": target_audience}},
-                    {"target_audience": {"$eq": "ALL"}},
-                ]
-            })
-        
-        if not conditions:
-            return None          # no filter
-        if len(conditions) == 1:
-            return conditions[0] # single filter
-        return {"$and": conditions}  # both filters
-
     def stats(self) -> dict:
         """Show what's in the database — useful for debugging."""
         
-        total    = self.collection.count()
-        all_meta = self.collection.get(include=["metadatas"])["metadatas"]
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM chunks;")
+            total = cur.fetchone()[0]
 
-        categories = {}
-        audiences  = {}
-        doc_ids    = set()
+            cur.execute("SELECT COUNT(DISTINCT document_id) FROM chunks;")
+            unique_docs = cur.fetchone()[0]
 
-        for m in all_meta:
-            cat = m.get("category", "?")
-            aud = m.get("target_audience", "?")
-            categories[cat] = categories.get(cat, 0) + 1
-            audiences[aud]  = audiences.get(aud, 0) + 1
-            doc_ids.add(m.get("document_id", "?"))
+            cur.execute("SELECT category, COUNT(*) FROM chunks GROUP BY category;")
+            categories = dict(cur.fetchall())
+
+            cur.execute("SELECT target_audience, COUNT(*) FROM chunks GROUP BY target_audience;")
+            audiences = dict(cur.fetchall())
 
         return {
             "total_chunks":     total,
-            "unique_documents": len(doc_ids),
+            "unique_documents": unique_docs,
             "by_category":      categories,
             "by_audience":      audiences,
         }
     
-    
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, ".")
+    from chunking.chunking import Chunking
+
+    store = NITCVectorStore()
+
+    with open("pdf_to_json/cse_2023_syllabus.json", encoding="utf-8") as f:
+        doc = json.load(f)
+
+    pages_and_text = [{"text": doc["content_markdown"], "page_number": 1}]
+
+    chunker = Chunking("recursive")
+    chunk_results = chunker.chunk(pages_and_text)
+    print(f"Total chunks: {len(chunk_results)}")
+
+    store.upsert_document(doc, chunk_results)
+
+    questions = [
+        "What are the list of electives for BTech CSE?",
+        "How many activity points are required?",
+        "What programming courses are taught?",
+        "How many credits are needed to graduate?",
+    ]
+
+    for q in questions:
+        print(f"\nQ: {q}")
+        results = store.query(q, n_results=2)
+        for r in results:
+            print(f"  Score {r['score']:.3f} | {r['text'][:80]}")
+
+    print("\n── Stats ───────────────────────────────")
+    print(json.dumps(store.stats(), indent=2))
+
+    print("\n✓ Smoke test passed.")
