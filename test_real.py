@@ -4,7 +4,7 @@ sys.path.insert(0, ".")
 
 from chunking.chunking import Chunking
 from chunking.models import ChunkResult, Strategy
-from vector_store import NITCVectorStore
+from db.vector_store import NITCVectorStore
 
 store = NITCVectorStore()
 

@@ -5,3 +5,6 @@ __pycache__/
 *.pyo
 *.pyd
 *.db        
+.env
+nitc_chroma_db/
+output.txt
