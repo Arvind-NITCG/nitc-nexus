@@ -131,16 +131,20 @@ def process_pdf(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"PDF not found: {path}")
 
-    # pymupdf4llm converts PDF pages into clean markdown
-    md_text: str = pymupdf4llm.to_markdown(path)
+    # pymupdf4llm converts PDF pages into clean markdown chunks
+    md_chunks = pymupdf4llm.to_markdown(path, page_chunks=True)
 
-    if not md_text.strip():
+    if not md_chunks:
         raise ValueError("No extractable text found in the PDF.")
+        
+    md_text = "\n\n".join(chunk.get("text", "") for chunk in md_chunks)
 
     title = _extract_title(md_text)
     category = _detect_category(md_text)
     audience = _extract_audience(md_text)
     date_issued = _extract_date(md_text)
+
+    content_markdown = [{"page": i + 1, "text": chunk.get("text", "")} for i, chunk in enumerate(md_chunks)]
 
     result: dict[str, Any] = {
         "document_id": str(uuid.uuid4()),
@@ -148,7 +152,7 @@ def process_pdf(path: str) -> dict[str, Any]:
         "category": category,
         "target_audience": audience,
         "date_issued": date_issued,
-        "content_markdown": md_text,
+        "content_markdown": content_markdown,
     }
     return result
 

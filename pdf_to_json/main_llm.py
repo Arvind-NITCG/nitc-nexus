@@ -55,17 +55,17 @@ Document:
 # ── PDF → Markdown ───────────────────────────────────────────────────────────
 
 
-def extract_markdown(path: str) -> str:
-    """Convert a PDF to markdown using pymupdf4llm."""
+def extract_markdown(path: str) -> list[dict[str, Any]]:
+    """Convert a PDF to markdown chunks using pymupdf4llm."""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"PDF not found: {path}")
 
-    md_text: str = pymupdf4llm.to_markdown(path)
+    md_chunks = pymupdf4llm.to_markdown(path, page_chunks=True)
 
-    if not md_text.strip():
+    if not md_chunks:
         raise ValueError("No extractable text found in the PDF.")
 
-    return md_text
+    return md_chunks
 
 
 # ── LLM Call ─────────────────────────────────────────────────────────────────
@@ -222,7 +222,8 @@ def process_pdf(path: str) -> dict[str, Any]:
     End-to-end: PDF → pymupdf4llm markdown → LLM metadata extraction → validated JSON.
     """
     print(f"📄 Extracting markdown from {path}…", file=sys.stderr)
-    md_text = extract_markdown(path)
+    md_chunks = extract_markdown(path)
+    md_text = "\n\n".join(chunk.get("text", "") for chunk in md_chunks)
     print(f"  ✔ Extracted {len(md_text)} chars of markdown", file=sys.stderr)
 
     print(f"🤖 Sending to {MODEL} for metadata extraction…", file=sys.stderr)
@@ -232,7 +233,7 @@ def process_pdf(path: str) -> dict[str, Any]:
     print("  ✔ LLM returned valid metadata", file=sys.stderr)
 
     # Attach the markdown we already have locally (saves LLM output tokens)
-    result["content_markdown"] = md_text
+    result["content_markdown"] = [{"page": i + 1, "text": chunk.get("text", "")} for i, chunk in enumerate(md_chunks)]
 
     # Attach a locally-generated document_id
     result["document_id"] = str(uuid.uuid4())
