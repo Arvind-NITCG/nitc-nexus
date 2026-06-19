@@ -30,7 +30,7 @@ import requests
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "openrouter/elephant-alpha"
+MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +90,7 @@ def call_llm(markdown: str) -> str:
             {"role": "user", "content": USER_PROMPT_TEMPLATE.format(pdf_markdown=markdown)},
         ],
         "temperature": 0.1,
+        "reasoning": {"enabled": True},
         "response_format": {"type": "json_object"},
     }
 
@@ -112,6 +113,13 @@ def call_llm(markdown: str) -> str:
 
         resp.raise_for_status()
         data = resp.json()
+        
+        if "error" in data:
+            raise RuntimeError(f"OpenRouter API Error: {data['error'].get('message', data['error'])}")
+            
+        if "choices" not in data:
+            raise ValueError(f"Unexpected API response (missing 'choices'): {data}")
+            
         return data["choices"][0]["message"]["content"]
 
     raise requests.RequestException(

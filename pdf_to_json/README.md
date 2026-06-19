@@ -26,6 +26,7 @@ Converts academic PDF documents into structured JSON with metadata. Two modes av
 
 - Python 3.10+
 - *(LLM mode only)* An [OpenRouter](https://openrouter.ai) API key
+- *(Optional)* Tesseract OCR installed on your system for scanned PDFs (e.g., `sudo dnf install tesseract` on Fedora, `sudo apt install tesseract-ocr` on Ubuntu)
 
 ---
 
@@ -145,6 +146,6 @@ NEXUS/
 | Problem | Fix |
 |---|---|
 | `OPENROUTER_API_KEY is not set` | Add your key to `.env` (only needed for `main_llm.py`) |
-| `No extractable text found in the PDF` | The PDF may be image-based (scanned). OCR is not currently supported |
+| `No extractable text found in the PDF` | The PDF may be image-based (scanned). Install `tesseract` on your system to enable automatic OCR support. |
 | `LLM did not return valid JSON` | Retry — the model may have returned malformed output |
 | Rate-limited (429) | The script retries automatically up to 5 times with exponential backoff |
